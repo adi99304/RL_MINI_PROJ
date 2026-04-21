@@ -16,6 +16,7 @@ function App() {
   const [isTraining, setIsTraining] = useState(false);
   const [isVisualizing, setIsVisualizing] = useState(false);
   const [epsilon, setEpsilon] = useState(agent.epsilon);
+  const [activeTab, setActiveTab] = useState('environment');
   
   const trainingRef = useRef(null);
   const vizRef = useRef(null);
@@ -26,6 +27,32 @@ function App() {
     const successRate = recent.filter(s => s.success).length / recent.length * 100;
     const avgReward = recent.reduce((sum, s) => sum + s.reward, 0) / recent.length;
     return { successRate: successRate.toFixed(1), avgReward: avgReward.toFixed(1) };
+  }, [trainingStats]);
+
+  const chartData = useMemo(() => {
+    if (trainingStats.length === 0) return [];
+    let recentSuccesses = [];
+    let recentRewards = [];
+    let cumulativeReward = 0;
+    
+    return trainingStats.map((stat) => {
+      recentSuccesses.push(stat.success ? 1 : 0);
+      recentRewards.push(stat.reward);
+      cumulativeReward += stat.reward;
+      
+      if (recentSuccesses.length > 20) recentSuccesses.shift();
+      if (recentRewards.length > 20) recentRewards.shift();
+      
+      const successRate = (recentSuccesses.reduce((a,b)=>a+b, 0) / recentSuccesses.length) * 100;
+      const rollingAvgReward = recentRewards.reduce((a,b)=>a+b, 0) / recentRewards.length;
+      
+      return {
+        ...stat,
+        successRate: parseFloat(successRate.toFixed(1)),
+        rollingAvgReward: parseFloat(rollingAvgReward.toFixed(1)),
+        cumulativeReward
+      };
+    });
   }, [trainingStats]);
 
   // Fast training
@@ -158,6 +185,69 @@ function App() {
     return cells;
   };
 
+  // Render Q-Value Heatmap
+  const renderHeatmap = () => {
+    const cells = [];
+    let minQ = -10, maxQ = 10; // Default range
+    
+    // Find min and max Q values to normalize colors
+    if (Object.keys(agent.qTable).length > 0) {
+      Object.values(agent.qTable).forEach(qVals => {
+        const stateMax = Math.max(...qVals);
+        const stateMin = Math.min(...qVals);
+        if(stateMax > maxQ) maxQ = stateMax;
+        if(stateMin < minQ) minQ = stateMin;
+      });
+    }
+
+    for (let y = 0; y < env.height; y++) {
+      for (let x = 0; x < env.width; x++) {
+        const isObstacle = env.isObstacle(x, y);
+        const isTarget = env.targetState.x === x && env.targetState.y === y;
+        
+        const stateKey = env.getStateKey({x, y});
+        const qVals = agent.qTable[stateKey];
+        let stateValue = 0;
+        
+        if (qVals && !isObstacle && !isTarget) {
+          stateValue = Math.max(...qVals);
+        } else if (isTarget) {
+          stateValue = 100;
+        } else if (isObstacle) {
+          stateValue = -100;
+        }
+
+        let bgColor = 'var(--grid-bg)';
+        if (isObstacle) {
+          bgColor = 'rgba(239, 68, 68, 0.4)'; // Red
+        } else if (isTarget) {
+          bgColor = 'rgba(16, 185, 129, 0.5)'; // Green
+        } else if (qVals) {
+          if (stateValue > 0) {
+            const intensity = Math.min(1, stateValue / (maxQ || 1));
+            bgColor = `rgba(16, 185, 129, ${0.1 + intensity * 0.8})`;
+          } else if (stateValue < 0) {
+            const intensity = Math.min(1, stateValue / (minQ || -1));
+            bgColor = `rgba(239, 68, 68, ${0.1 + intensity * 0.8})`;
+          } else {
+            bgColor = 'rgba(255, 255, 255, 0.05)';
+          }
+        }
+
+        cells.push(
+          <div key={`heat-${x}-${y}`} className={`grid-cell ${isObstacle ? 'obstacle' : ''} ${isTarget ? 'target' : ''}`} style={{ backgroundColor: bgColor }}>
+            {isObstacle && <span className="heatmap-value">OBS</span>}
+            {isTarget && <span className="heatmap-value">GOAL</span>}
+            {!isObstacle && !isTarget && qVals && (
+              <span className="heatmap-value">{stateValue.toFixed(1)}</span>
+            )}
+          </div>
+        );
+      }
+    }
+    return cells;
+  };
+
   return (
     <div className="app-container">
       <header>
@@ -168,18 +258,98 @@ function App() {
       <div className="dashboard">
         <div className="main-content">
           <div className="panel">
-            <h2>Simulation Environment</h2>
-            <div className="grid-container">
-              <div className="grid-board">
-                {renderGrid()}
-              </div>
+            <div className="tabs">
+              <button 
+                className={`tab-btn ${activeTab === 'environment' ? 'active' : ''}`}
+                onClick={() => setActiveTab('environment')}
+              >
+                Simulation
+              </button>
+              <button 
+                className={`tab-btn ${activeTab === 'heatmap' ? 'active' : ''}`}
+                onClick={() => setActiveTab('heatmap')}
+              >
+                Q-Value Heatmap
+              </button>
+              <button 
+                className={`tab-btn ${activeTab === 'analytics' ? 'active' : ''}`}
+                onClick={() => setActiveTab('analytics')}
+              >
+                Extended Analytics
+              </button>
             </div>
-            
-            {trainingStats.length > 0 && (
+
+            {activeTab === 'environment' && (
+              <>
+                <h2>Environment State</h2>
+                <div className="grid-container">
+                  <div className="grid-board">
+                    {renderGrid()}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {activeTab === 'heatmap' && (
+              <>
+                <h2>Maximum Expected Reward (State Value)</h2>
+                <div className="grid-container">
+                  <div className="grid-board">
+                    {renderHeatmap()}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'center', marginTop: '1rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                  Green represents higher expected future rewards. Red indicates negative expected rewards (or obstacles).
+                </div>
+              </>
+            )}
+
+            {activeTab === 'analytics' && chartData.length > 0 && (
+              <>
+                <h2>Training Metrics (Rolling Averages)</h2>
+                <div className="chart-container" style={{ marginTop: '0', height: '250px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="epoch" stroke="#94a3b8" />
+                      <YAxis stroke="#94a3b8" />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
+                        itemStyle={{ color: '#10b981' }}
+                      />
+                      <Line type="monotone" dataKey="successRate" stroke="#10b981" name="Success Rate (%)" dot={false} strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.5rem', marginBottom: '1.5rem' }}>
+                    Rolling Success Rate (20 Epochs)
+                  </div>
+                </div>
+
+                <div className="chart-container" style={{ height: '250px' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="epoch" stroke="#94a3b8" />
+                      <YAxis stroke="#94a3b8" />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
+                        itemStyle={{ color: '#8b5cf6' }}
+                      />
+                      <Line type="monotone" dataKey="cumulativeReward" stroke="#8b5cf6" name="Cumulative Reward" dot={false} strokeWidth={2} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.5rem', marginBottom: '1.5rem' }}>
+                    Cumulative Reward
+                  </div>
+                </div>
+              </>
+            )}
+
+            {activeTab === 'environment' && trainingStats.length > 0 && (
               <>
               <div className="chart-container">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trainingStats}>
+                  <LineChart data={chartData}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                     <XAxis dataKey="epoch" stroke="#94a3b8" />
                     <YAxis stroke="#94a3b8" />
@@ -187,7 +357,8 @@ function App() {
                       contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #475569' }}
                       itemStyle={{ color: '#38bdf8' }}
                     />
-                    <Line type="monotone" dataKey="reward" stroke="#38bdf8" dot={false} strokeWidth={2} />
+                    <Line type="monotone" dataKey="rollingAvgReward" name="Avg Reward (20 ep)" stroke="#38bdf8" dot={false} strokeWidth={2} />
+                    <Line type="monotone" dataKey="reward" name="Reward" stroke="rgba(56, 189, 248, 0.3)" dot={false} strokeWidth={1} />
                   </LineChart>
                 </ResponsiveContainer>
                 <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.9rem', marginTop: '0.5rem' }}>
@@ -198,7 +369,7 @@ function App() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginTop: '2rem' }}>
                 <div className="chart-container" style={{ marginTop: '0' }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trainingStats}>
+                    <LineChart data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                       <XAxis dataKey="epoch" stroke="#94a3b8" />
                       <YAxis stroke="#94a3b8" />
@@ -216,7 +387,7 @@ function App() {
                 
                 <div className="chart-container" style={{ marginTop: '0' }}>
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={trainingStats}>
+                    <LineChart data={chartData}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                       <XAxis dataKey="epoch" stroke="#94a3b8" />
                       <YAxis stroke="#94a3b8" />
